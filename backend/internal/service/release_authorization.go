@@ -24,11 +24,12 @@ type ReleaseAuthorizationService interface {
 
 type releaseAuthorizationService struct {
 	repository repository.ReleaseAuthorizationRepository
+	blocking   repository.AirworthinessBlockRepository
 	security   SecurityService
 }
 
-func NewReleaseAuthorizationService(repo repository.ReleaseAuthorizationRepository, security SecurityService) ReleaseAuthorizationService {
-	return &releaseAuthorizationService{repository: repo, security: security}
+func NewReleaseAuthorizationService(repo repository.ReleaseAuthorizationRepository, blocking repository.AirworthinessBlockRepository, security SecurityService) ReleaseAuthorizationService {
+	return &releaseAuthorizationService{repository: repo, blocking: blocking, security: security}
 }
 
 func (s *releaseAuthorizationService) List(ctx context.Context, query dto.PageQuery) (repository.Page[model.ReleaseAuthorization], error) {
@@ -103,6 +104,27 @@ func (s *releaseAuthorizationService) Transition(ctx context.Context, id uint, i
 		return model.ReleaseAuthorization{}, ErrForbidden
 	}
 	if target == "review" {
+		if current.Status == "restricted" {
+			// Re-entry after a failed inspection: permitted only when this
+			// authorization was restricted by that block AND the block has
+			// been resolved by a passed re-inspection (no failed inspection
+			// remains for the code). Reviewer-decided restrictions stay
+			// terminal, and a still-active block keeps the release closed.
+			if current.Blocked() {
+				return model.ReleaseAuthorization{}, fmt.Errorf("%w: 失败任务 %s 未通过重新检查，不得放行", ErrAirworthinessHold, current.BlockedByTaskCode)
+			}
+			if current.BlockedByTaskCode == "" || current.BlockResolvedAt == nil {
+				return model.ReleaseAuthorization{}, fmt.Errorf("%w: 复核员限制的授权不能重新提交", ErrAirworthinessHold)
+			}
+			blocked, err := s.blocking.HasFailedInspection(ctx, current.RelatedCode)
+			if err != nil {
+				return model.ReleaseAuthorization{}, fmt.Errorf("check airworthiness block: %w", err)
+			}
+			if blocked {
+				return model.ReleaseAuthorization{}, fmt.Errorf("%w: 仍有失败检查未关闭，不得重新提交", ErrAirworthinessHold)
+			}
+		}
+		// Resubmission re-enters the standard two-person review queue.
 		current.SubmittedBy = actor
 		current.ReviewedBy = ""
 		current.ReviewReason = ""
@@ -116,6 +138,17 @@ func (s *releaseAuthorizationService) Transition(ctx context.Context, id uint, i
 		}
 		current.ReviewedBy = actor
 		current.ReviewReason = strings.TrimSpace(input.Reason)
+	}
+	// A passed re-inspection still requires a fresh review; no approval can
+	// slip through while an unresolved failed inspection covers the code.
+	if target == "approved" {
+		blocked, err := s.blocking.HasFailedInspection(ctx, current.RelatedCode)
+		if err != nil {
+			return model.ReleaseAuthorization{}, fmt.Errorf("check airworthiness block: %w", err)
+		}
+		if blocked {
+			return model.ReleaseAuthorization{}, fmt.Errorf("%w: 存在失败检查任务，不得批准放行", ErrAirworthinessHold)
+		}
 	}
 	before := current.Status
 	current.Status = target
@@ -131,6 +164,9 @@ func (s *releaseAuthorizationService) Delete(ctx context.Context, id uint, actor
 	current, err := s.repository.Get(ctx, id)
 	if err != nil {
 		return err
+	}
+	if current.Blocked() {
+		return fmt.Errorf("%w: 失败任务 %s 阻断未解除", ErrAirworthinessHold, current.BlockedByTaskCode)
 	}
 	if current.Status != model.ReleaseAuthorizationInitialStatus {
 		return ErrLocked

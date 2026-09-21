@@ -66,6 +66,9 @@ func (s *aircraftPartService) Update(ctx context.Context, id uint, input dto.Upd
 	if err != nil {
 		return model.AircraftPart{}, err
 	}
+	if current.Blocked() {
+		return model.AircraftPart{}, fmt.Errorf("%w: 失败任务 %s 阻断未解除", ErrAirworthinessHold, current.BlockedByTaskCode)
+	}
 	if err := validateAircraftPartBusinessFields(current.Code, input.Name, input.Facility, input.Owner); err != nil {
 		return model.AircraftPart{}, err
 	}
@@ -94,6 +97,11 @@ func (s *aircraftPartService) Transition(ctx context.Context, id uint, input dto
 	if err != nil {
 		return model.AircraftPart{}, err
 	}
+	// An active inspection-failure block closes the part state machine until
+	// the one-shot recovery resumes it. No manual release/advance is allowed.
+	if current.Blocked() {
+		return model.AircraftPart{}, fmt.Errorf("%w: 失败任务 %s 未通过重新检查，部件保持暂停", ErrAirworthinessHold, current.BlockedByTaskCode)
+	}
 	target := strings.TrimSpace(input.Status)
 	if !constants.CanTransition(constants.AircraftPartTransitions, current.Status, target) {
 		return model.AircraftPart{}, fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, current.Status, target)
@@ -115,6 +123,9 @@ func (s *aircraftPartService) Delete(ctx context.Context, id uint, actor, reques
 	current, err := s.repository.Get(ctx, id)
 	if err != nil {
 		return err
+	}
+	if current.Blocked() {
+		return fmt.Errorf("%w: 失败任务 %s 阻断未解除", ErrAirworthinessHold, current.BlockedByTaskCode)
 	}
 	if err := s.repository.Delete(ctx, id); err != nil {
 		return err

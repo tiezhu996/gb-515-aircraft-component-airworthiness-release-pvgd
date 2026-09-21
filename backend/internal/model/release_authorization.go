@@ -20,6 +20,17 @@ type ReleaseAuthorization struct {
 	ReviewedBy   string                         `json:"reviewedBy" gorm:"size:80;index"`
 	ReviewReason string                         `json:"reviewReason" gorm:"size:500"`
 	Revisions    []ReleaseAuthorizationRevision `json:"revisions,omitempty" gorm:"foreignKey:ReleaseAuthorizationID"`
+
+	// Airworthiness blocking chain. A failed inspection task for the same
+	// RelatedCode forces review/approved authorizations to restricted and
+	// records the failed task code and reason. After the re-inspection passes
+	// the block is resolved exactly once and the authorization must be
+	// resubmitted for the standard two-person review; it cannot return to
+	// approved directly.
+	BlockedByTaskCode string     `json:"blockedByTaskCode" gorm:"size:64;index"`
+	BlockReason       string     `json:"blockReason" gorm:"size:500"`
+	BlockedAt         *time.Time `json:"blockedAt"`
+	BlockResolvedAt   *time.Time `json:"blockResolvedAt"`
 }
 
 func (item *ReleaseAuthorization) GetBase() *BaseModel { return &item.BaseModel }
@@ -27,6 +38,12 @@ func (item *ReleaseAuthorization) GetBase() *BaseModel { return &item.BaseModel 
 func (item ReleaseAuthorization) TableName() string { return "release_authorizations" }
 
 var ReleaseAuthorizationInitialStatus = "draft"
+
+// Blocked reports whether an inspection-failure airworthiness block is
+// currently active on the authorization.
+func (item *ReleaseAuthorization) Blocked() bool {
+	return item.BlockedByTaskCode != "" && item.BlockedAt != nil && item.BlockResolvedAt == nil
+}
 
 // ReleaseAuthorizationRevision preserves the complete authorization decision
 // chain, including who acted and which request produced the version.

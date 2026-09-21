@@ -16,6 +16,12 @@ type InspectionTask struct {
 	EffectiveAt time.Time `json:"effectiveAt"`
 	Evidence    string    `json:"evidence" gorm:"size:2000"`
 	RelatedCode string    `json:"relatedCode" gorm:"size:64;index"`
+
+	// FailureReason captures the operator-provided reason carried by the
+	// transition request when the task is judged failed. It is cleared only by
+	// a subsequent re-inspection transition so the inspection page can display
+	// the failed task code and reason consistently after refresh.
+	FailureReason string `json:"failureReason" gorm:"size:500"`
 }
 
 func (item *InspectionTask) GetBase() *BaseModel { return &item.BaseModel }
@@ -23,3 +29,10 @@ func (item *InspectionTask) GetBase() *BaseModel { return &item.BaseModel }
 func (item InspectionTask) TableName() string { return "inspection_tasks" }
 
 var InspectionTaskInitialStatus = "planned"
+
+// Inspection task terminal/decision statuses reused by the blocking service.
+const (
+	InspectionStatusRunning = "running"
+	InspectionStatusFailed  = "failed"
+	InspectionStatusPassed  = "passed"
+)

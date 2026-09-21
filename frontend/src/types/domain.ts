@@ -14,12 +14,22 @@ export interface DomainRecord {
   metricUnit: string;
   effectiveAt: string;
   evidence: string;
-	relatedCode: string;
+  relatedCode: string;
 	preparedBy?: string;
 	verifiedBy?: string;
 	submittedBy?: string;
 	reviewedBy?: string;
 	reviewReason?: string;
+	/** 检查任务失败时记录的判定原因，重新检查通过后清空 */
+	failureReason?: string;
+	/** 部件失败阻断前的状态，用于一次性恢复 */
+	preBlockStatus?: string;
+	/** 触发适航阻断的失败检查任务编号 */
+	blockedByTaskCode?: string;
+	/** 阻断原因（失败检查任务的判定原因） */
+	blockReason?: string;
+	blockedAt?: string | null;
+	blockResolvedAt?: string | null;
 	revisions?: VersionRevision[];
 	createdAt: string;
 	updatedAt: string;

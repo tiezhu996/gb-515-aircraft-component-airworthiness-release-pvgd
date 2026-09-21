@@ -7,6 +7,7 @@ import { useCertificateRecordStore } from '../stores/certificate-record';
 export default function InspectionTaskPage() {
   const certificates = useCertificateRecordStore((state) => state.items);
   const loadCertificates = useCertificateRecordStore((state) => state.load);
+  const inspections = useInspectionTaskStore((state) => state.items);
   useEffect(() => { void loadCertificates('certificates'); }, [loadCertificates]);
-  return <EntityPage config={ENTITY_CONFIGS[1]} useStore={useInspectionTaskStore} certificateRecords={certificates} />;
+  return <EntityPage config={ENTITY_CONFIGS[1]} useStore={useInspectionTaskStore} certificateRecords={certificates} inspectionRecords={inspections} />;
 }

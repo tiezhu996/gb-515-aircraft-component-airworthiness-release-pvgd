@@ -10,4 +10,5 @@ var (
 	ErrForbidden         = errors.New("role is not permitted for this operation")
 	ErrLocked            = errors.New("record is locked after review begins")
 	ErrSeparationOfDuty  = errors.New("preparer and reviewer must be different users")
+	ErrAirworthinessHold = errors.New("airworthiness block from a failed inspection forbids this action")
 )

@@ -19,7 +19,7 @@ func handleError(c *gin.Context, err error) {
 		util.Fail(c, http.StatusConflict, "version_conflict", "record changed; refresh and retry")
 	case errors.Is(err, service.ErrForbidden):
 		util.Fail(c, http.StatusForbidden, "forbidden", err.Error())
-	case errors.Is(err, service.ErrLocked), errors.Is(err, service.ErrSeparationOfDuty):
+	case errors.Is(err, service.ErrLocked), errors.Is(err, service.ErrSeparationOfDuty), errors.Is(err, service.ErrAirworthinessHold):
 		util.Fail(c, http.StatusConflict, "control_conflict", err.Error())
 	case errors.Is(err, service.ErrInvalidTransition), errors.Is(err, service.ErrInvalidInput):
 		util.Fail(c, http.StatusUnprocessableEntity, "business_rule", err.Error())

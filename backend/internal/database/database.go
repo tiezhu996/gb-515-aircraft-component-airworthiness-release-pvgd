@@ -139,17 +139,30 @@ func seedAircraftPart(ctx context.Context, db *gorm.DB) error {
 			Category: "常规", RiskLevel: "low", MetricValue: 12.5, MetricUnit: "unit",
 			EffectiveAt: now.Add(0 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-515-01"},
 
-		{BaseModel: model.BaseModel{Code: "AP-002", Name: "航空部件示例二", Status: "inspection", Version: 1,
+		{BaseModel: model.BaseModel{Code: "AP-002", Name: "航空部件示例二", Status: "hold", Version: 2,
 			Description: "用于启动验证和主要流程演示的航空部件记录"}, Facility: "航空部件适航放行区域2", Owner: "质量复核组",
-			Category: "重点", RiskLevel: "medium", MetricValue: 25.0, MetricUnit: "%",
-			EffectiveAt: now.Add(3 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-515-02"},
+			Category: "重点", RiskLevel: "critical", MetricValue: 25.0, MetricUnit: "%",
+			EffectiveAt: now.Add(3 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-515-02",
+			PreBlockStatus: "inspection", BlockedByTaskCode: "IT-002",
+			BlockReason: "超声检测发现超标裂纹缺陷，暂停放行等待复检", BlockedAt: &now},
 
 		{BaseModel: model.BaseModel{Code: "AP-003", Name: "航空部件示例三", Status: "hold", Version: 1,
 			Description: "用于启动验证和主要流程演示的航空部件记录"}, Facility: "航空部件适航放行区域3", Owner: "安全主管组",
 			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
 			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-515-03"},
 	}
-	return db.WithContext(ctx).Create(&items).Error
+	if err := db.WithContext(ctx).Create(&items).Error; err != nil {
+		return err
+	}
+	var blockedPart model.AircraftPart
+	if err := db.WithContext(ctx).Where("code = ?", "AP-002").First(&blockedPart).Error; err != nil {
+		return err
+	}
+	return db.WithContext(ctx).Create(&model.AuditLog{
+		RequestID: "seed-gb-515", Actor: "system-seed", Action: "airworthiness-block",
+		EntityType: "AircraftPart", EntityID: blockedPart.ID, BeforeState: "inspection", AfterState: "hold",
+		Detail: "检查任务 IT-002 判定失败，部件暂停: 超声检测发现超标裂纹缺陷，暂停放行等待复检", CreatedAt: now,
+	}).Error
 }
 
 func seedInspectionTask(ctx context.Context, db *gorm.DB) error {
@@ -165,17 +178,33 @@ func seedInspectionTask(ctx context.Context, db *gorm.DB) error {
 			Category: "常规", RiskLevel: "low", MetricValue: 12.5, MetricUnit: "unit",
 			EffectiveAt: now.Add(0 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-515-01"},
 
-		{BaseModel: model.BaseModel{Code: "IT-002", Name: "检查任务示例二", Status: "running", Version: 1,
+		// IT-002 is the active airworthiness-block demonstration: the failed
+		// judgment pauses AP-002 and forces RA-002 to restricted.
+		{BaseModel: model.BaseModel{Code: "IT-002", Name: "检查任务示例二", Status: "failed", Version: 2,
 			Description: "用于启动验证和主要流程演示的检查任务记录"}, Facility: "航空部件适航放行区域2", Owner: "质量复核组",
-			Category: "重点", RiskLevel: "medium", MetricValue: 25.0, MetricUnit: "%",
-			EffectiveAt: now.Add(3 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-515-02"},
+			Category: "重点", RiskLevel: "critical", MetricValue: 25.0, MetricUnit: "%",
+			EffectiveAt: now.Add(3 * time.Hour), Evidence: "超声检测发现超标裂纹", RelatedCode: "REL-515-02",
+			FailureReason: "超声检测发现超标裂纹缺陷，暂停放行等待复检"},
 
 		{BaseModel: model.BaseModel{Code: "IT-003", Name: "检查任务示例三", Status: "passed", Version: 1,
 			Description: "用于启动验证和主要流程演示的检查任务记录"}, Facility: "航空部件适航放行区域3", Owner: "安全主管组",
 			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
 			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-515-03"},
 	}
-	return db.WithContext(ctx).Create(&items).Error
+	if err := db.WithContext(ctx).Create(&items).Error; err != nil {
+		return err
+	}
+	// Mirror the audit trail that the blocking transaction would have written
+	// so the seeded failure displays a consistent blocking chain everywhere.
+	var blocked model.InspectionTask
+	if err := db.WithContext(ctx).Where("code = ?", "IT-002").First(&blocked).Error; err != nil {
+		return err
+	}
+	return db.WithContext(ctx).Create(&model.AuditLog{
+		RequestID: "seed-gb-515", Actor: "system-seed", Action: "transition",
+		EntityType: "InspectionTask", EntityID: blocked.ID, BeforeState: "running", AfterState: "failed",
+		Detail: blocked.FailureReason, CreatedAt: now,
+	}).Error
 }
 
 func seedCertificateRecord(ctx context.Context, db *gorm.DB) error {
@@ -230,10 +259,12 @@ func seedReleaseAuthorization(ctx context.Context, db *gorm.DB) error {
 			Category: "常规", RiskLevel: "low", MetricValue: 12.5, MetricUnit: "unit",
 			EffectiveAt: now.Add(0 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-515-01"},
 
-		{BaseModel: model.BaseModel{Code: "RA-002", Name: "放行授权示例二", Status: "review", Version: 1,
+		{BaseModel: model.BaseModel{Code: "RA-002", Name: "放行授权示例二", Status: "restricted", Version: 2,
 			Description: "用于启动验证和主要流程演示的放行授权记录"}, Facility: "航空部件适航放行区域2", Owner: "质量复核组",
-			Category: "重点", RiskLevel: "medium", MetricValue: 25.0, MetricUnit: "%",
-			EffectiveAt: now.Add(3 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-515-02", SubmittedBy: "operator"},
+			Category: "重点", RiskLevel: "critical", MetricValue: 25.0, MetricUnit: "%",
+			EffectiveAt: now.Add(3 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-515-02",
+			SubmittedBy: "operator", BlockedByTaskCode: "IT-002",
+			BlockReason: "超声检测发现超标裂纹缺陷，暂停放行等待复检", BlockedAt: &now},
 
 		{BaseModel: model.BaseModel{Code: "RA-003", Name: "放行授权示例三", Status: "approved", Version: 1,
 			Description: "用于启动验证和主要流程演示的放行授权记录"}, Facility: "航空部件适航放行区域3", Owner: "安全主管组",
@@ -244,14 +275,50 @@ func seedReleaseAuthorization(ctx context.Context, db *gorm.DB) error {
 		if err := tx.Create(&items).Error; err != nil {
 			return err
 		}
-		revisions := make([]model.ReleaseAuthorizationRevision, 0, len(items))
+		revisions := make([]model.ReleaseAuthorizationRevision, 0, len(items)+1)
+		audits := make([]model.AuditLog, 0, len(items)+1)
 		for _, item := range items {
+			audits = append(audits, model.AuditLog{
+				RequestID: "seed-gb-515", Actor: "system-seed", Action: "seed",
+				EntityType: "ReleaseAuthorization", EntityID: item.ID, AfterState: item.Status,
+				Detail: "initial demonstration authorization", CreatedAt: now,
+			})
+			// RA-002 needs its v1/v2 revisions written explicitly below.
+			if item.Code == "RA-002" {
+				continue
+			}
 			revisions = append(revisions, model.ReleaseAuthorizationRevision{
 				ReleaseAuthorizationID: item.ID, Version: item.Version, Status: item.Status,
 				Evidence: item.Evidence, Actor: "system-seed", RequestID: "seed-gb-515",
 				Action: "seed", Reason: "initial demonstration authorization", CreatedAt: now,
 			})
 		}
-		return tx.Create(&revisions).Error
+		// RA-002 carries the inspection-failure block: its v1 review seed and
+		// v2 blocking revision mirror the real blocking transaction.
+		for _, item := range items {
+			if item.Code != "RA-002" {
+				continue
+			}
+			blockDetail := "检查任务 IT-002 判定失败，待复核/已批准授权转为受限: " + item.BlockReason
+			revisions = append(revisions, model.ReleaseAuthorizationRevision{
+				ReleaseAuthorizationID: item.ID, Version: 1, Status: "review",
+				Evidence: item.Evidence, Actor: "system-seed", RequestID: "seed-gb-515",
+				Action: "seed", Reason: "initial demonstration authorization", CreatedAt: now,
+			})
+			revisions = append(revisions, model.ReleaseAuthorizationRevision{
+				ReleaseAuthorizationID: item.ID, Version: item.Version, Status: "restricted",
+				Evidence: item.Evidence, Actor: "system-seed", RequestID: "seed-gb-515",
+				Action: "airworthiness-block", Reason: blockDetail, CreatedAt: now,
+			})
+			audits = append(audits, model.AuditLog{
+				RequestID: "seed-gb-515", Actor: "system-seed", Action: "airworthiness-block",
+				EntityType: "ReleaseAuthorization", EntityID: item.ID, BeforeState: "review",
+				AfterState: "restricted", Detail: blockDetail, CreatedAt: now,
+			})
+		}
+		if err := tx.Create(&revisions).Error; err != nil {
+			return err
+		}
+		return tx.Create(&audits).Error
 	})
 }

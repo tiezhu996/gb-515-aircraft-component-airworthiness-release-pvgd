@@ -50,10 +50,14 @@ var CertificateRecordTransitions = map[string]map[string]bool{
 }
 
 var ReleaseAuthorizationTransitions = map[string]map[string]bool{
-	"draft":      {"review": true},
-	"review":     {"approved": true, "restricted": true, "draft": true},
-	"approved":   {"restricted": true, "revoked": true},
-	"restricted": {"revoked": true},
+	"draft":    {"review": true},
+	"review":   {"approved": true, "restricted": true, "draft": true},
+	"approved": {"restricted": true, "revoked": true},
+	// restricted -> review exists only for authorizations restricted by an
+	// inspection-failure block after the re-inspection passes. The service
+	// layer enforces that gate; reviewer-initiated restrictions keep the
+	// original terminal behaviour.
+	"restricted": {"revoked": true, "review": true},
 	"revoked":    {},
 }
 
