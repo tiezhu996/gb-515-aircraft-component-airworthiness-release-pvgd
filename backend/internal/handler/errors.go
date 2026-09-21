@@ -23,6 +23,8 @@ func handleError(c *gin.Context, err error) {
 		util.Fail(c, http.StatusConflict, "control_conflict", err.Error())
 	case errors.Is(err, service.ErrInvalidTransition), errors.Is(err, service.ErrInvalidInput):
 		util.Fail(c, http.StatusUnprocessableEntity, "business_rule", err.Error())
+	case errors.Is(err, service.ErrAirworthinessHold), errors.Is(err, service.ErrBlockStillActive):
+		util.Fail(c, http.StatusConflict, "airworthiness_blocked", err.Error())
 	default:
 		_ = c.Error(err)
 		util.Fail(c, http.StatusInternalServerError, "internal_error", "request could not be completed")

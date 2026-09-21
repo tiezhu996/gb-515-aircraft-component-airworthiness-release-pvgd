@@ -16,6 +16,11 @@ type InspectionTask struct {
 	EffectiveAt time.Time `json:"effectiveAt"`
 	Evidence    string    `json:"evidence" gorm:"size:2000"`
 	RelatedCode string    `json:"relatedCode" gorm:"size:64;index"`
+
+	// FailureReason records why the inspection was judged failed and is reused
+	// as the blocking reason on parts and release authorizations. It is cleared
+	// when the task passes re-inspection.
+	FailureReason string `json:"failureReason" gorm:"size:500"`
 }
 
 func (item *InspectionTask) GetBase() *BaseModel { return &item.BaseModel }

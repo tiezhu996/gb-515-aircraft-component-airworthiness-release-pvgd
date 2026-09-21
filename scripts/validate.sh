@@ -97,6 +97,104 @@ printf '%s' "$certificate_valid" | jq -e '.data.status == "valid" and .data.vers
 curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/audits/ReleaseAuthorization/${authorization_id}?limit=10" \
   -H "Authorization: Bearer $admin_token" \
   | jq -e '[.data[].requestId] | index("gb515-auth-create") != null and index("gb515-auth-review") != null and index("gb515-auth-approve") != null' >/dev/null
+
+# --- Airworthiness blocking closure -----------------------------------------
+# A failed inspection must atomically hold the same-code part, force
+# review/approved authorizations to restricted (recording task code + reason),
+# block release/approval/resubmission, and after re-inspection passes allow
+# exactly one re-submission for the unchanged dual-control review.
+block_now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+block_suffix=$(date +%s)
+block_code="BLOCK-SMOKE-${block_suffix}"
+block_part=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/parts" \
+  -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -H 'X-Request-ID: gb515-block-part' \
+  -d "{\"code\":\"PART-BLOCK-${block_suffix}\",\"name\":\"Block closure part\",\"facility\":\"Validation Hangar\",\"owner\":\"Release Desk\",\"category\":\"engine\",\"riskLevel\":\"critical\",\"metricValue\":100,\"metricUnit\":\"percent\",\"effectiveAt\":\"${block_now}\",\"evidence\":\"pre-failure evidence\",\"relatedCode\":\"${block_code}\"}")
+block_part_id=$(printf '%s' "$block_part" | jq -er '.data.id')
+block_part_v1=$(printf '%s' "$block_part" | jq -er '.data.version')
+curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/parts/${block_part_id}/transition" \
+  -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' \
+  -d "{\"status\":\"inspection\",\"expectedVersion\":${block_part_v1},\"reason\":\"enter inspection\"}" >/dev/null
+
+block_inspection=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/inspections" \
+  -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -H 'X-Request-ID: gb515-block-it' \
+  -d "{\"code\":\"IT-BLOCK-${block_suffix}\",\"name\":\"Block closure inspection\",\"facility\":\"Validation Hangar\",\"owner\":\"Release Desk\",\"category\":\"engine\",\"riskLevel\":\"critical\",\"metricValue\":100,\"metricUnit\":\"percent\",\"effectiveAt\":\"${block_now}\",\"evidence\":\"measurement sheet\",\"relatedCode\":\"${block_code}\"}")
+block_inspection_id=$(printf '%s' "$block_inspection" | jq -er '.data.id')
+block_inspection_v1=$(printf '%s' "$block_inspection" | jq -er '.data.version')
+curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/inspections/${block_inspection_id}/transition" \
+  -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' \
+  -d "{\"status\":\"running\",\"expectedVersion\":${block_inspection_v1},\"reason\":\"start inspection\"}" >/dev/null
+
+block_auth=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/authorizations" \
+  -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -H 'X-Request-ID: gb515-block-auth' \
+  -d "{\"code\":\"AUTH-BLOCK-${block_suffix}\",\"name\":\"Block closure release\",\"facility\":\"Validation Hangar\",\"owner\":\"Release Desk\",\"category\":\"engine\",\"riskLevel\":\"critical\",\"metricValue\":100,\"metricUnit\":\"percent\",\"effectiveAt\":\"${block_now}\",\"evidence\":\"evidence pack\",\"relatedCode\":\"${block_code}\"}")
+block_auth_id=$(printf '%s' "$block_auth" | jq -er '.data.id')
+block_auth_v1=$(printf '%s' "$block_auth" | jq -er '.data.version')
+curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/authorizations/${block_auth_id}/transition" \
+  -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' \
+  -d "{\"status\":\"review\",\"expectedVersion\":${block_auth_v1},\"reason\":\"submit before failure\"}" >/dev/null
+
+block_failed=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/inspections/${block_inspection_id}/transition" \
+  -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -H 'X-Request-ID: gb515-block-fail' \
+  -d "{\"status\":\"failed\",\"expectedVersion\":2,\"reason\":\"blade crack beyond allowed limit\"}")
+block_task_code=$(printf '%s' "$block_failed" | jq -er '.data.code')
+block_failed_v=$(printf '%s' "$block_failed" | jq -er '.data.version')
+printf '%s' "$block_failed" | jq -e '.data.status == "failed" and .data.failureReason == "blade crack beyond allowed limit"' >/dev/null
+
+curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/parts/${block_part_id}" -H "Authorization: Bearer $viewer_token" \
+  | jq -e --arg code "$block_task_code" '.data.status == "hold" and .data.blockActive == true and .data.blockingTaskCode == $code and .data.blockingReason == "blade crack beyond allowed limit"' >/dev/null
+curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/authorizations/${block_auth_id}" -H "Authorization: Bearer $viewer_token" \
+  | jq -e --arg code "$block_task_code" '.data.status == "restricted" and .data.blockActive == true and .data.blockingTaskCode == $code and (.data.revisions[-1].action == "airworthiness_block")' >/dev/null
+
+block_part_vhold=$(curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/parts/${block_part_id}" -H "Authorization: Bearer $operator_token" | jq -er '.data.version')
+block_release_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/parts/${block_part_id}/transition" \
+  -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' \
+  -d "{\"status\":\"released\",\"expectedVersion\":${block_part_vhold},\"reason\":\"release during block\"}")
+[ "$block_release_status" = "409" ]
+block_auth_vrestricted=$(curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/authorizations/${block_auth_id}" -H "Authorization: Bearer $operator_token" | jq -er '.data.version')
+block_resubmit_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/authorizations/${block_auth_id}/transition" \
+  -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' \
+  -d "{\"status\":\"review\",\"expectedVersion\":${block_auth_vrestricted},\"reason\":\"resubmit during block\"}")
+[ "$block_resubmit_status" = "409" ]
+block_duplicate_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/inspections/${block_inspection_id}/transition" \
+  -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' \
+  -d "{\"status\":\"failed\",\"expectedVersion\":${block_failed_v},\"reason\":\"duplicate judgment\"}")
+[ "$block_duplicate_status" = "422" ]
+
+curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/inspections/${block_inspection_id}/transition" \
+  -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' \
+  -d "{\"status\":\"running\",\"expectedVersion\":${block_failed_v},\"reason\":\"reopen for re-inspection\"}" >/dev/null
+block_reopen_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/authorizations/${block_auth_id}/transition" \
+  -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' \
+  -d "{\"status\":\"review\",\"expectedVersion\":${block_auth_vrestricted},\"reason\":\"early resubmit during re-inspection\"}")
+[ "$block_reopen_status" = "409" ]
+curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/inspections/${block_inspection_id}/transition" \
+  -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -H 'X-Request-ID: gb515-block-pass' \
+  -d "{\"status\":\"passed\",\"expectedVersion\":$((block_failed_v + 1)),\"reason\":\"re-inspection passed\"}" >/dev/null
+
+curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/parts/${block_part_id}" -H "Authorization: Bearer $viewer_token" \
+  | jq -e '.data.status == "hold" and .data.blockActive == false and (.data.blockingTaskCode | length > 0)' >/dev/null
+block_recovered=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/authorizations/${block_auth_id}/transition" \
+  -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -H 'X-Request-ID: gb515-block-resubmit' \
+  -d "{\"status\":\"review\",\"expectedVersion\":$((block_auth_vrestricted + 1)),\"reason\":\"resubmit after re-inspection\"}")
+printf '%s' "$block_recovered" | jq -e '.data.status == "review" and .data.submittedBy == "operator" and (.data.reviewedBy == "")' >/dev/null
+block_review_v=$(printf '%s' "$block_recovered" | jq -er '.data.version')
+block_self_approve=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/authorizations/${block_auth_id}/transition" \
+  -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' \
+  -d "{\"status\":\"approved\",\"expectedVersion\":${block_review_v},\"reason\":\"operator self approval\"}")
+[ "$block_self_approve" = "403" ]
+block_reapproved=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/authorizations/${block_auth_id}/transition" \
+  -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -H 'X-Request-ID: gb515-block-reapprove' \
+  -d "{\"status\":\"approved\",\"expectedVersion\":${block_review_v},\"reason\":\"independent re-approval after re-inspection\"}")
+printf '%s' "$block_reapproved" | jq -e '.data.status == "approved" and .data.reviewedBy == "reviewer"' >/dev/null
+block_part_vclear=$(curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/parts/${block_part_id}" -H "Authorization: Bearer $operator_token" | jq -er '.data.version')
+curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/parts/${block_part_id}/transition" \
+  -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' \
+  -d "{\"status\":\"released\",\"expectedVersion\":${block_part_vclear},\"reason\":\"manual release after recovery\"}" \
+  | jq -e '.data.status == "released"' >/dev/null
+
+curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/audits/AircraftPart/${block_part_id}?limit=20" -H "Authorization: Bearer $admin_token" \
+  | jq -e '[.data[].action] | index("airworthiness_block") != null and index("airworthiness_release") != null' >/dev/null
+
 curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/audit-summary?windowHours=24" -H "Authorization: Bearer $admin_token" \
   | jq -e '.data.total >= 5 and .data.transitions >= 3 and .data.uniqueActors >= 2' >/dev/null
 

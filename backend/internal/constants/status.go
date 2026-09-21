@@ -50,10 +50,13 @@ var CertificateRecordTransitions = map[string]map[string]bool{
 }
 
 var ReleaseAuthorizationTransitions = map[string]map[string]bool{
-	"draft":      {"review": true},
-	"review":     {"approved": true, "restricted": true, "draft": true},
-	"approved":   {"restricted": true, "revoked": true},
-	"restricted": {"revoked": true},
+	"draft":    {"review": true},
+	"review":   {"approved": true, "restricted": true, "draft": true},
+	"approved": {"restricted": true, "revoked": true},
+	// restricted -> review is reserved for re-submission after an inspection
+	// failure block is cleared. The service additionally requires an inactive
+	// inspection block so a reviewer-imposed restriction cannot silently reopen.
+	"restricted": {"revoked": true, "review": true},
 	"revoked":    {},
 }
 

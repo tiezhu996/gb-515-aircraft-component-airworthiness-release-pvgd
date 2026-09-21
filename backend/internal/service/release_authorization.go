@@ -24,11 +24,12 @@ type ReleaseAuthorizationService interface {
 
 type releaseAuthorizationService struct {
 	repository repository.ReleaseAuthorizationRepository
+	blocker    AirworthinessBlocker
 	security   SecurityService
 }
 
-func NewReleaseAuthorizationService(repo repository.ReleaseAuthorizationRepository, security SecurityService) ReleaseAuthorizationService {
-	return &releaseAuthorizationService{repository: repo, security: security}
+func NewReleaseAuthorizationService(repo repository.ReleaseAuthorizationRepository, blocker AirworthinessBlocker, security SecurityService) ReleaseAuthorizationService {
+	return &releaseAuthorizationService{repository: repo, blocker: blocker, security: security}
 }
 
 func (s *releaseAuthorizationService) List(ctx context.Context, query dto.PageQuery) (repository.Page[model.ReleaseAuthorization], error) {
@@ -102,10 +103,38 @@ func (s *releaseAuthorizationService) Transition(ctx context.Context, id uint, i
 	if !isOperatorRole(role) {
 		return model.ReleaseAuthorization{}, ErrForbidden
 	}
-	if target == "review" {
+	if current.Status == "restricted" && target == "review" {
+		// The only way out of restricted back to review is a released inspection
+		// block: a reviewer-imposed restriction must follow the normal restricted
+		// lifecycle, and re-submission is forbidden while the failure is active.
+		// The resulting review must still pass dual-control approval afterwards.
+		// Clearing the stamp closes this blocking episode so a later reviewer
+		// restriction on the same authorization cannot re-use this gateway.
+		if strings.TrimSpace(current.BlockingTaskCode) == "" {
+			return model.ReleaseAuthorization{}, fmt.Errorf("%w: restriction was imposed by a reviewer, not by an inspection failure", ErrInvalidTransition)
+		}
+		if err := s.blocker.EnsureClear(ctx, current.RelatedCode); err != nil {
+			return model.ReleaseAuthorization{}, err
+		}
 		current.SubmittedBy = actor
 		current.ReviewedBy = ""
 		current.ReviewReason = ""
+		current.BlockingTaskCode = ""
+		current.BlockingReason = ""
+	} else if target == "review" {
+		current.SubmittedBy = actor
+		current.ReviewedBy = ""
+		current.ReviewReason = ""
+	}
+	if target == "approved" {
+		// A blocked component can never be approved, regardless of the row state.
+		active, taskCode, _, err := s.blocker.ActiveFailure(ctx, current.RelatedCode)
+		if err != nil {
+			return model.ReleaseAuthorization{}, fmt.Errorf("check airworthiness block: %w", err)
+		}
+		if active {
+			return model.ReleaseAuthorization{}, fmt.Errorf("%w: 检查任务 %s 失败待复核", ErrAirworthinessHold, taskCode)
+		}
 	}
 	if target == "approved" || target == "restricted" || target == "revoked" || target == "draft" {
 		if !isReviewerRole(role) {

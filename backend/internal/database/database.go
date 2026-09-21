@@ -58,6 +58,16 @@ func Open(ctx context.Context, cfg config.Config, log *slog.Logger) (*gorm.DB, *
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect database: %w", err)
 	}
+	// SQLite permits only one writer. Pinning the pool serializes transactions
+	// (the failure-block closure relies on row locks on MySQL/Postgres) and
+	// prevents SQLITE_BUSY failures during concurrent requests.
+	if cfg.DatabaseDriver == "sqlite" {
+		sqlDB, err := db.DB()
+		if err != nil {
+			return nil, nil, fmt.Errorf("configure sqlite pool: %w", err)
+		}
+		sqlDB.SetMaxOpenConns(1)
+	}
 	if err := migrate(db); err != nil {
 		return nil, nil, err
 	}
@@ -148,6 +158,12 @@ func seedAircraftPart(ctx context.Context, db *gorm.DB) error {
 			Description: "用于启动验证和主要流程演示的航空部件记录"}, Facility: "航空部件适航放行区域3", Owner: "安全主管组",
 			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
 			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-515-03"},
+
+		{BaseModel: model.BaseModel{Code: "AP-004", Name: "航空部件示例四（适航阻断）", Status: "hold", Version: 2,
+			Description: "检查任务 IT-004 判定失败后自动转暂停的同编号部件"}, Facility: "航空部件适航放行区域4", Owner: "待复核组",
+			Category: "重点", RiskLevel: "critical", MetricValue: 50.0, MetricUnit: "score",
+			EffectiveAt: now.Add(9 * time.Hour), Evidence: "检查发现超差，暂停放行", RelatedCode: "REL-515-04",
+			BlockingTaskCode: "IT-004", BlockingReason: "叶根裂纹超出允许极限，判定失败待复核", BlockActive: true},
 	}
 	return db.WithContext(ctx).Create(&items).Error
 }
@@ -174,6 +190,12 @@ func seedInspectionTask(ctx context.Context, db *gorm.DB) error {
 			Description: "用于启动验证和主要流程演示的检查任务记录"}, Facility: "航空部件适航放行区域3", Owner: "安全主管组",
 			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
 			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-515-03"},
+
+		{BaseModel: model.BaseModel{Code: "IT-004", Name: "检查任务示例四（判定失败）", Status: "failed", Version: 2,
+			Description: "判定失败后触发适航阻断闭环的检查任务"}, Facility: "航空部件适航放行区域4", Owner: "待复核组",
+			Category: "重点", RiskLevel: "critical", MetricValue: 50.0, MetricUnit: "score",
+			EffectiveAt: now.Add(9 * time.Hour), Evidence: "叶根裂纹超出允许极限", RelatedCode: "REL-515-04",
+			FailureReason: "叶根裂纹超出允许极限，判定失败待复核"},
 	}
 	return db.WithContext(ctx).Create(&items).Error
 }
@@ -239,12 +261,19 @@ func seedReleaseAuthorization(ctx context.Context, db *gorm.DB) error {
 			Description: "用于启动验证和主要流程演示的放行授权记录"}, Facility: "航空部件适航放行区域3", Owner: "安全主管组",
 			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
 			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-515-03", SubmittedBy: "operator", ReviewedBy: "reviewer", ReviewReason: "演示数据双人复核通过"},
+
+		{BaseModel: model.BaseModel{Code: "RA-004", Name: "放行授权示例四（失败转限制）", Status: "restricted", Version: 2,
+			Description: "检查任务 IT-004 判定失败后由已批准自动转限制放行，重新检查通过后只能重新提交复核"}, Facility: "航空部件适航放行区域4", Owner: "待复核组",
+			Category: "重点", RiskLevel: "critical", MetricValue: 50.0, MetricUnit: "score",
+			EffectiveAt: now.Add(9 * time.Hour), Evidence: "原批准证据包冻结", RelatedCode: "REL-515-04",
+			SubmittedBy: "operator", ReviewedBy: "reviewer", BlockingTaskCode: "IT-004",
+			BlockingReason: "叶根裂纹超出允许极限，判定失败待复核", BlockActive: true},
 	}
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&items).Error; err != nil {
 			return err
 		}
-		revisions := make([]model.ReleaseAuthorizationRevision, 0, len(items))
+		revisions := make([]model.ReleaseAuthorizationRevision, 0, len(items)+1)
 		for _, item := range items {
 			revisions = append(revisions, model.ReleaseAuthorizationRevision{
 				ReleaseAuthorizationID: item.ID, Version: item.Version, Status: item.Status,
@@ -252,6 +281,11 @@ func seedReleaseAuthorization(ctx context.Context, db *gorm.DB) error {
 				Action: "seed", Reason: "initial demonstration authorization", CreatedAt: now,
 			})
 		}
+		revisions = append(revisions, model.ReleaseAuthorizationRevision{
+			ReleaseAuthorizationID: items[3].ID, Version: 1, Status: "approved",
+			Evidence: items[3].Evidence, Actor: "reviewer", RequestID: "seed-gb-515",
+			Action: "seed", Reason: "initial demonstration approval before inspection failure", CreatedAt: now.Add(-time.Hour),
+		})
 		return tx.Create(&revisions).Error
 	})
 }

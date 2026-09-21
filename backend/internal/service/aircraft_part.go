@@ -24,11 +24,12 @@ type AircraftPartService interface {
 
 type aircraftPartService struct {
 	repository repository.AircraftPartRepository
+	blocker    AirworthinessBlocker
 	security   SecurityService
 }
 
-func NewAircraftPartService(repo repository.AircraftPartRepository, security SecurityService) AircraftPartService {
-	return &aircraftPartService{repository: repo, security: security}
+func NewAircraftPartService(repo repository.AircraftPartRepository, blocker AirworthinessBlocker, security SecurityService) AircraftPartService {
+	return &aircraftPartService{repository: repo, blocker: blocker, security: security}
 }
 
 func (s *aircraftPartService) List(ctx context.Context, query dto.PageQuery) (repository.Page[model.AircraftPart], error) {
@@ -97,6 +98,18 @@ func (s *aircraftPartService) Transition(ctx context.Context, id uint, input dto
 	target := strings.TrimSpace(input.Status)
 	if !constants.CanTransition(constants.AircraftPartTransitions, current.Status, target) {
 		return model.AircraftPart{}, fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, current.Status, target)
+	}
+	if target == "released" {
+		// No release may proceed while a failed inspection for the component
+		// code has not passed re-inspection, even when the row itself carries no
+		// active stamp.
+		active, taskCode, _, err := s.blocker.ActiveFailure(ctx, current.RelatedCode)
+		if err != nil {
+			return model.AircraftPart{}, fmt.Errorf("check airworthiness block: %w", err)
+		}
+		if active {
+			return model.AircraftPart{}, fmt.Errorf("%w: 检查任务 %s 失败待复核", ErrAirworthinessHold, taskCode)
+		}
 	}
 	before := current.Status
 	current.Status = target

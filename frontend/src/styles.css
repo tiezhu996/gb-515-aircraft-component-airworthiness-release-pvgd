@@ -59,3 +59,10 @@ td small { display: block; color: #7d8d97; margin-top: 4px; }
 @media (max-width: 1100px) { .evidence-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 900px) { .app-shell { grid-template-columns: 1fr; } aside { position: static; height: auto; } nav { grid-template-columns: repeat(2, 1fr); } .user-panel { display: none; } .metrics { grid-template-columns: 1fr; } .workspace { padding: 18px; } .page-header { flex-direction: column; } .audit-list article { grid-template-columns: 1fr; } }
 @media (max-width: 560px) { .login-page { padding: 0; align-items: stretch; }.login-panel { padding: 26px 20px; box-shadow: none; }.account-switcher { grid-template-columns: repeat(2, 1fr); }.evidence-strip { grid-template-columns: 1fr; }.certificate-section > header { align-items: flex-start; flex-direction: column; }.toolbar { flex-wrap: wrap; }.toolbar input { min-width: 100%; }.topbar { padding: 0 18px; } table { min-width: 820px; } th, td { white-space: nowrap; } td:nth-child(2) { white-space: normal; min-width: 180px; } }
+.action-group { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.table-action--danger { color: #b23a48; }
+.table-action--secondary { color: #8a6d1f; }
+.row-blocked { background: #fdf3f4; }
+.block-flag { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 999px; background: #f8d7db; color: #922b34; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.block-detail { color: #922b34 !important; font-size: 11px; max-width: 260px; }
+.block-detail--recovered { color: #176c55 !important; }

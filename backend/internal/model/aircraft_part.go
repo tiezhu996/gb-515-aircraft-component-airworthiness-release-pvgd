@@ -16,6 +16,14 @@ type AircraftPart struct {
 	EffectiveAt time.Time `json:"effectiveAt"`
 	Evidence    string    `json:"evidence" gorm:"size:2000"`
 	RelatedCode string    `json:"relatedCode" gorm:"size:64;index"`
+
+	// Airworthiness blocking stamp produced by a failed inspection task sharing
+	// the same RelatedCode. BlockActive is cleared once every failed task for the
+	// code passes re-inspection; BlockingTaskCode/BlockingReason are retained so
+	// the page can still explain why the part was put on hold.
+	BlockingTaskCode string `json:"blockingTaskCode" gorm:"size:64;index"`
+	BlockingReason   string `json:"blockingReason" gorm:"size:500"`
+	BlockActive      bool   `json:"blockActive" gorm:"not null;default:false;index"`
 }
 
 func (item *AircraftPart) GetBase() *BaseModel { return &item.BaseModel }

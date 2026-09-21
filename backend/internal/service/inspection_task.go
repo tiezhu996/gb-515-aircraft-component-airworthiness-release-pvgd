@@ -24,11 +24,12 @@ type InspectionTaskService interface {
 
 type inspectionTaskService struct {
 	repository repository.InspectionTaskRepository
+	blocks     repository.AirworthinessBlockRepository
 	security   SecurityService
 }
 
-func NewInspectionTaskService(repo repository.InspectionTaskRepository, security SecurityService) InspectionTaskService {
-	return &inspectionTaskService{repository: repo, security: security}
+func NewInspectionTaskService(repo repository.InspectionTaskRepository, blocks repository.AirworthinessBlockRepository, security SecurityService) InspectionTaskService {
+	return &inspectionTaskService{repository: repo, blocks: blocks, security: security}
 }
 
 func (s *inspectionTaskService) List(ctx context.Context, query dto.PageQuery) (repository.Page[model.InspectionTask], error) {
@@ -98,15 +99,70 @@ func (s *inspectionTaskService) Transition(ctx context.Context, id uint, input d
 	if !constants.CanTransition(constants.InspectionTaskTransitions, current.Status, target) {
 		return model.InspectionTask{}, fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, current.Status, target)
 	}
+	reason := strings.TrimSpace(input.Reason)
 	before := current.Status
-	current.Status = target
-	current.Version = input.ExpectedVersion + 1
-	current.UpdatedAt = time.Now().UTC()
-	if err := s.repository.Update(ctx, id, input.ExpectedVersion, &current); err != nil {
-		return model.InspectionTask{}, fmt.Errorf("transition 检查任务: %w", err)
+	now := time.Now().UTC()
+	change := repository.BlockChange{
+		Actor: actor, RequestID: requestID, TaskCode: current.Code, TaskID: id,
+		Reason: reason, OccurredAt: now,
 	}
-	if err := s.security.Audit(ctx, actor, requestID, "transition", "InspectionTask", id, before, target, input.Reason); err != nil {
-		return model.InspectionTask{}, fmt.Errorf("persist transition audit: %w", err)
+
+	switch {
+	case before == "running" && target == "failed":
+		// Failed judgment plus the same-code part/authorization cascade commit
+		// together, including the task's own audit row, so a failure never leaves
+		// a half update. The repository performs the version CAS against the
+		// persisted "running" state; mutating current here would break it.
+		if err := s.blocks.ApplyFailure(ctx, &current, input.ExpectedVersion, change); err != nil {
+			return model.InspectionTask{}, fmt.Errorf("apply inspection failure block: %w", err)
+		}
+	case before == "failed" && target == "running":
+		// Reopening for re-inspection keeps the failure reason and the block in
+		// force; only a subsequent pass clears both.
+		current.Status = target
+		current.Version = input.ExpectedVersion + 1
+		current.UpdatedAt = now
+		if err := s.repository.Update(ctx, id, input.ExpectedVersion, &current); err != nil {
+			return model.InspectionTask{}, fmt.Errorf("reopen 检查任务: %w", err)
+		}
+		if err := s.security.Audit(ctx, actor, requestID, "transition", "InspectionTask", id, before, target, reason); err != nil {
+			return model.InspectionTask{}, fmt.Errorf("persist transition audit: %w", err)
+		}
+	case before == "running" && target == "passed":
+		if strings.TrimSpace(current.FailureReason) != "" {
+			// Re-inspection of a previously failed task. ClearFailure commits the
+			// pass, the task audit row and the one-time recovery of stamped rows
+			// atomically; when another same-code task is still failed the block
+			// stays in force.
+			otherFailure, err := s.blocks.ClearFailure(ctx, &current, input.ExpectedVersion, change)
+			if err != nil {
+				return model.InspectionTask{}, fmt.Errorf("release inspection failure block: %w", err)
+			}
+			if otherFailure {
+				_ = s.security.Audit(ctx, actor, requestID, "airworthiness_block", "InspectionTask", id, before, target, "re-inspection passed but another failed task keeps the component blocked")
+			}
+		} else {
+			current.Status = target
+			current.Version = input.ExpectedVersion + 1
+			current.UpdatedAt = now
+			if err := s.repository.Update(ctx, id, input.ExpectedVersion, &current); err != nil {
+				return model.InspectionTask{}, fmt.Errorf("transition 检查任务: %w", err)
+			}
+			if err := s.security.Audit(ctx, actor, requestID, "transition", "InspectionTask", id, before, target, reason); err != nil {
+				return model.InspectionTask{}, fmt.Errorf("persist transition audit: %w", err)
+			}
+		}
+	default:
+		// planned -> running is the only remaining graph edge.
+		current.Status = target
+		current.Version = input.ExpectedVersion + 1
+		current.UpdatedAt = now
+		if err := s.repository.Update(ctx, id, input.ExpectedVersion, &current); err != nil {
+			return model.InspectionTask{}, fmt.Errorf("transition 检查任务: %w", err)
+		}
+		if err := s.security.Audit(ctx, actor, requestID, "transition", "InspectionTask", id, before, target, reason); err != nil {
+			return model.InspectionTask{}, fmt.Errorf("persist transition audit: %w", err)
+		}
 	}
 	return s.repository.Get(ctx, id)
 }

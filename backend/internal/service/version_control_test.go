@@ -58,7 +58,8 @@ func TestCertificateVersionChainRequiresIndependentReviewer(t *testing.T) {
 
 func TestAuthorizationVersionChainEnforcesDualControl(t *testing.T) {
 	db := newVersionTestDB(t)
-	service := NewReleaseAuthorizationService(repository.NewReleaseAuthorizationRepository(db), nil)
+	blocker := NewAirworthinessBlockerService(repository.NewAirworthinessBlockRepository(db))
+	service := NewReleaseAuthorizationService(repository.NewReleaseAuthorizationRepository(db), blocker, nil)
 	ctx := context.Background()
 
 	created, err := service.Create(ctx, authorizationInput("AUTH-TEST-01"), "operator", "auth-create-1")
@@ -108,7 +109,8 @@ func newVersionTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	if err := db.AutoMigrate(
-		&model.AuditLog{}, &model.CertificateRecord{}, &model.CertificateRecordRevision{},
+		&model.AuditLog{}, &model.AircraftPart{}, &model.InspectionTask{},
+		&model.CertificateRecord{}, &model.CertificateRecordRevision{},
 		&model.ReleaseAuthorization{}, &model.ReleaseAuthorizationRevision{},
 	); err != nil {
 		t.Fatalf("migrate sqlite: %v", err)

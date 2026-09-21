@@ -21,6 +21,13 @@ export interface DomainRecord {
 	reviewedBy?: string;
 	reviewReason?: string;
 	revisions?: VersionRevision[];
+	// Airworthiness blocking closure: failureReason is stamped on a failed
+	// inspection task; block* fields are the same failure mirrored onto parts
+	// and release authorizations sharing the component code.
+	failureReason?: string;
+	blockingTaskCode?: string;
+	blockingReason?: string;
+	blockActive?: boolean;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -43,11 +50,4 @@ export interface UserSession { token: string; username: string; displayName: str
 export interface AuditLog {
   id: number; requestId: string; actor: string; action: string; entityType: string;
   entityId: number; beforeState: string; afterState: string; detail: string; createdAt: string;
-}
-export interface EntityConfig {
-  key: string;
-  path: string;
-  label: string;
-  statuses: readonly string[];
-  primaryTransitions: Readonly<Record<string, string>>;
 }
